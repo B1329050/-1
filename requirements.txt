@@ -5,3 +5,6 @@ yfinance
 finmind
 plotly
 requests
+tqdm
+lxml
+beautifulsoup4
