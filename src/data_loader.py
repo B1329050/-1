@@ -5,76 +5,77 @@ from FinMind.data import DataLoader
 import streamlit as st
 from datetime import datetime, timedelta
 import time
+import functools
 from .config import DATASETS
 
-# --- 獨立的快取函式 (放在 Class 外面以避免 Hash 錯誤) ---
+# --- [實作報告 4.1] Python 裝飾器處理速率限制 ---
+def rate_limit_handler(retries=3, delay=5):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            for i in range(retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if "429" in str(e) or "Too Many Requests" in str(e):
+                        print(f"⚠️ 達到 API 限制，暫停 {delay} 秒後重試...")
+                        time.sleep(delay)
+                    else:
+                        print(f"API Error: {e}")
+                        # 若非限流錯誤，回傳空 DataFrame 避免崩潰
+                        return pd.DataFrame()
+            return pd.DataFrame()
+        return wrapper
+    return decorator
 
 @st.cache_data(ttl=3600)
 def fetch_price_from_yahoo(ticker):
-    """
-    獨立獲取價格函式 (Yahoo Finance)
-    """
-    # 處理台股代碼後綴
     yf_ticker = ticker if ticker.endswith(('.TW', '.TWO')) else f"{ticker}.TW"
     try:
         stock = yf.Ticker(yf_ticker)
-        df = stock.history(period="2y")
+        df = stock.history(period="5y") # 抓長一點算 CAGR
         info = stock.info
         return df, info
     except Exception as e:
-        print(f"Yahoo Finance Error: {e}")
         return pd.DataFrame(), {}
 
 @st.cache_data(ttl=86400)
 def fetch_financials_from_finmind(stock_id, api_token_str):
-    """
-    獨立獲取財報函式 (FinMind)
-    """
     fm = DataLoader()
-    
-    # 處理登入邏輯
     if api_token_str and str(api_token_str).strip():
         try:
             fm.login_by_token(api_token=str(api_token_str).strip())
-        except Exception:
-            pass # 登入失敗就用免費模式
+        except: pass
 
-    # 拉取 5 年數據
+    # [報告 2.1.1] 葛拉漢需要 3-5 年數據算平均 EPS，故拉取 5 年
     start_date = (datetime.now() - timedelta(days=365*5)).strftime('%Y-%m-%d')
     
-    results = []
-    
-    # [關鍵修正] 這是 FinMind 最準確的函式名稱清單
+    # 定義內部函數以套用 Retry
+    @rate_limit_handler()
+    def safe_fetch(func, **kwargs):
+        return func(**kwargs)
+
     datasets = [
-        fm.taiwan_stock_balance_sheet,          # 資產負債表
-        fm.taiwan_stock_financial_statement,    # 綜合損益表 (注意是單數 statement)
-        fm.taiwan_stock_cash_flows_statement,   # 現金流量表 (注意 flows 是複數, 且有 _statement)
-        fm.taiwan_stock_month_revenue           # 月營收
+        fm.taiwan_stock_balance_sheet,
+        fm.taiwan_stock_financial_statement,
+        fm.taiwan_stock_cash_flows_statement,
+        fm.taiwan_stock_month_revenue,
+        fm.taiwan_stock_dividend # [新增] 股利表
     ]
     
+    results = []
     for func in datasets:
-        try:
-            df = func(stock_id=stock_id, start_date=start_date)
-            if isinstance(df, pd.DataFrame):
-                results.append(df)
-            else:
-                results.append(pd.DataFrame())
-            
-            # 免費模式休息機制
-            if not api_token_str:
-                time.sleep(2)
-        except Exception as e:
-            print(f"FinMind Fetch Error: {e}")
+        df = safe_fetch(func, stock_id=stock_id, start_date=start_date)
+        if isinstance(df, pd.DataFrame):
+            results.append(df)
+        else:
             results.append(pd.DataFrame())
-
-    # 補齊 4 個 DataFrame，避免 unpacking 錯誤
-    while len(results) < 4:
-        results.append(pd.DataFrame())
         
-    return results[0], results[1], results[2], results[3]
+        if not api_token_str: time.sleep(2)
 
-
-# --- DataEngine 類別 ---
+    while len(results) < 5: results.append(pd.DataFrame())
+        
+    return results[0], results[1], results[2], results[3], results[4]
 
 class DataEngine:
     def __init__(self, token=None):
@@ -85,6 +86,3 @@ class DataEngine:
 
     def get_financial_data(self, stock_id):
         return fetch_financials_from_finmind(stock_id, self.token)
-
-    def get_realtime_mops_revenue(self, stock_id):
-        return None
