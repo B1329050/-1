@@ -12,7 +12,7 @@ class DataEngine:
         self.fm = DataLoader()
         self.token = token
         if self.token:
-            self.fm.login(token=token)
+            self.fm.login_by_token(api_token=token)
         else:
             print("⚠️ 警告: 未檢測到 FinMind Token。將使用免費限制模式 (可能會遇到請求頻率限制)。")
 
