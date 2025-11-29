@@ -5,9 +5,11 @@ DATASETS = {
     'INCOME_STATEMENT': 'TaiwanStockFinancialStatements',
     'CASH_FLOW': 'TaiwanStockCashFlows',
     'REVENUE': 'TaiwanStockMonthRevenue',
-    'DIVIDEND': 'TaiwanStockDividend' # [新增] 股利政策表
+    'DIVIDEND': 'TaiwanStockDividend',
+    'INSTITUTIONAL': 'TaiwanStockInstitutionalInvestorsBuySell' # [新增] 三大法人
 }
 
+# 會計科目映射 (支援 FinMind 多種命名可能)
 MAPPING = {
     # --- 資產負債表 ---
     'ASSETS': ['TotalAssets', 'Assets'], 
@@ -15,10 +17,11 @@ MAPPING = {
     'CURRENT_ASSETS': ['CurrentAssets'],
     'CURRENT_LIABILITIES': ['CurrentLiabilities'],
     'NON_CURRENT_LIABILITIES': ['NonCurrentLiabilities'],
-    'RETAINED_EARNINGS': ['RetainedEarnings', 'UnappropriatedRetainedEarnings'], 
-    'EQUITY': ['TotalEquity', 'Equity', 'StockholdersEquity'], # 修正權益
+    'RETAINED_EARNINGS': ['RetainedEarnings', 'UnappropriatedRetainedEarnings', 'RetainedEarningsAccumulatedDeficit'], 
+    'EQUITY': ['TotalEquity', 'Equity', 'StockholdersEquity'],
     'COMMON_STOCK': ['CommonStock', 'OrdinaryShares', 'CapitalStock'],
-    'FIXED_ASSETS': ['NonCurrentAssets', 'FixedAssets'], # 用於神奇公式
+    'FIXED_ASSETS': ['NonCurrentAssets', 'FixedAssets', 'PropertyPlantAndEquipment'], # 用於神奇公式
+    'CASH': ['CashAndCashEquivalents', 'Cash'], # 用於企業價值 EV 計算
 
     # --- 損益表 ---
     'REVENUE': ['Revenue', 'OperatingRevenue', 'TotalOperatingRevenue'],
@@ -27,15 +30,12 @@ MAPPING = {
     'PRE_TAX_INCOME': ['PreTaxIncome', 'IncomeBeforeTax'],
     'NET_INCOME': ['IncomeAfterTaxes', 'NetIncome', 'ProfitLoss'],
     'INTEREST_EXPENSE': ['InterestExpense', 'FinanceCosts'],
-    'EPS': ['EPS', 'EarningsPerShare'], # 用於葛拉漢數
+    'EPS': ['EPS', 'EarningsPerShare'],
     'EBIT': ['EBIT'],
 
     # --- 現金流量表 ---
-    'OPERATING_CASH_FLOW': ['CashFlowsFromOperatingActivities', 'NetCashProvidedByUsedInOperatingActivities'],
-    
-    # --- 股利表 ---
-    'CASH_DIVIDEND': ['CashEarningsDistribution', 'CashDividend'], # 現金股利
-    'STOCK_DIVIDEND': ['StockEarningsDistribution', 'StockDividend'] # 股票股利
+    'OPERATING_CASH_FLOW': ['CashFlowsFromOperatingActivities', 'NetCashProvidedByUsedInOperatingActivities']
 }
 
+# 金融業代碼 (不適用 Z-Score)
 EXCLUDED_SECTORS = ['28']
