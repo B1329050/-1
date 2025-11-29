@@ -4,12 +4,13 @@ from .config import MAPPING, EXCLUDED_SECTORS
 
 class MetricCalculator:
     def __init__(self, bs_df, inc_df, cf_df, rev_df, div_df, chip_df, info):
+        # 初始化接收所有報表 (含 chip_df)
         self.bs = self._pivot_data(bs_df)
         self.inc = self._pivot_data(inc_df)
         self.cf = self._pivot_data(cf_df)
         self.rev = rev_df 
         self.div = div_df
-        self.chip = chip_df # [新增] 籌碼資料
+        self.chip = chip_df # [重要] 籌碼資料
         self.info = info
         
     def _pivot_data(self, df):
@@ -43,21 +44,25 @@ class MetricCalculator:
         except: return None
 
     # ========================================================
-    # 1. 在地化籌碼分析 (Chip Analysis) [cite: 317-338]
+    # 1. 在地化籌碼分析 (Chip Analysis) [之前遺漏的部分]
     # ========================================================
     def calculate_chip_metrics(self):
+        """
+        計算三大法人動向：外資連買、投信認養
+        """
         try:
             if self.chip.empty: return {}
             
-            # 整理籌碼數據 (三大法人表通常是長格式)
+            # 整理數據 (三大法人表是 Long Format)
             df = self.chip.copy()
             df['date'] = pd.to_datetime(df['date'])
-            df = df.sort_values('date', ascending=True)
+            df = df.sort_values('date', ascending=True) # 按時間排序
             
-            # 取最近 30 天數據
-            df_recent = df.tail(90) # 3法人 * 30天
+            # 取最近 60 天數據 (足夠判斷趨勢)
+            # 每天有 3 筆資料 (外資, 投信, 自營)，所以取 180 筆
+            df_recent = df.tail(180) 
             
-            # A. 外資連續買超 [cite: 323]
+            # A. 外資連續買超 (Foreign Trend)
             # 篩選外資 (Foreign_Investor)
             foreign = df_recent[df_recent['name'] == 'Foreign_Investor'].tail(3)
             foreign_consecutive_buy = False
@@ -65,13 +70,13 @@ class MetricCalculator:
                 # 檢查最後 3 筆是否買大於賣
                 foreign_consecutive_buy = (foreign['buy'] > foreign['sell']).all()
 
-            # B. 投信作帳 (Investment Trust Alpha) [cite: 330-334]
-            # 條件: 投信近期買超 > 0 且 股本 < 50 億 (中小型股)
-            trust = df_recent[df_recent['name'] == 'Investment_Trust'].tail(10) # 看近10日
+            # B. 投信作帳 (Investment Trust Alpha)
+            # 條件: 投信近期(10日)淨買超 > 0 且 為中小型股
+            trust = df_recent[df_recent['name'] == 'Investment_Trust'].tail(10)
             trust_net_buy = (trust['buy'] - trust['sell']).sum()
             
             market_cap = self.info.get('marketCap', 0)
-            # 50億台幣約等於 1.6 億美金 (Yahoo info 單位通常為元)
+            # 50億台幣約 1.6 億美金
             is_small_cap = market_cap < (50 * 100000000) 
             
             trust_active = (trust_net_buy > 0) and is_small_cap
@@ -82,49 +87,11 @@ class MetricCalculator:
                 "Trust Net Buy": trust_net_buy
             }
         except Exception as e:
+            # print(f"Chip Error: {e}")
             return {}
 
     # ========================================================
-    # 2. 營收動能 (Revenue Momentum) [cite: 278, 305-308]
-    # ========================================================
-    def calculate_revenue_growth(self):
-        try:
-            if self.rev.empty: return None, None
-            
-            df = self.rev.copy()
-            df['date'] = pd.to_datetime(df['date'])
-            df = df.sort_values('date', ascending=False)
-            
-            val_col = 'revenue'
-            if val_col not in df.columns:
-                if 'value' in df.columns: val_col = 'value'
-                else: return None, None 
-
-            if len(df) < 2: return None, None
-
-            # 最新月份
-            curr_rev = df.iloc[0][val_col]
-            curr_date = df.iloc[0]['date']
-            
-            # MoM (月增率)
-            last_month_rev = df.iloc[1][val_col]
-            mom = ((curr_rev - last_month_rev) / last_month_rev * 100) if last_month_rev else 0
-            
-            # YoY (年增率)
-            target_date = curr_date - pd.DateOffset(years=1)
-            mask = (df['date'] >= target_date - pd.Timedelta(days=5)) & \
-                   (df['date'] <= target_date + pd.Timedelta(days=5))
-            prev_rows = df.loc[mask]
-            yoy = 0
-            if not prev_rows.empty:
-                prev_rev = prev_rows.iloc[0][val_col]
-                yoy = ((curr_rev - prev_rev) / prev_rev * 100) if prev_rev else 0
-                
-            return mom, yoy
-        except: return None, None
-
-    # ========================================================
-    # 3. 大師指標 (Guru Metrics)
+    # 2. 大師指標 (Guru Metrics)
     # ========================================================
     def calculate_guru_metrics(self):
         try:
@@ -132,7 +99,7 @@ class MetricCalculator:
             curr_date = self.inc.index[0]
             def get(df, key): return self._get_value_smart(df, curr_date, key)
 
-            # --- 葛拉漢數 (5年平均 EPS) [cite: 13] ---
+            # --- 葛拉漢數 (5年平均 EPS) ---
             equity = get(self.bs, 'EQUITY')
             common_stock = get(self.bs, 'COMMON_STOCK')
             shares = (common_stock / 10) if common_stock > 0 else 1
@@ -140,7 +107,6 @@ class MetricCalculator:
 
             avg_eps = 0
             eps_values = []
-            # 抓取過去 20 季
             for i in range(min(20, len(self.inc))):
                 d = self.inc.index[i]
                 q_eps = self._get_value_smart(self.inc, d, 'EPS')
@@ -152,12 +118,11 @@ class MetricCalculator:
             if eps_values: avg_eps = (sum(eps_values) / len(eps_values)) * 4
             graham_number = (22.5 * avg_eps * bvps) ** 0.5 if (avg_eps > 0 and bvps > 0) else 0
 
-            # 葛拉漢防禦檢查 (流動比, 負債)
             curr_assets = get(self.bs, 'CURRENT_ASSETS')
             curr_liab = get(self.bs, 'CURRENT_LIABILITIES')
             current_ratio = (curr_assets / curr_liab) if curr_liab > 0 else 0
             
-            # --- 林區 PEG (殖利率修正) [cite: 36-38] ---
+            # --- 林區 PEG (殖利率修正) ---
             div_yield = 0
             if not self.div.empty:
                 try:
@@ -171,7 +136,7 @@ class MetricCalculator:
             pe = self.info.get('trailingPE', 0)
             lynch_peg = pe / (growth + div_yield) if (growth + div_yield) > 0 and pe > 0 else None
 
-            # --- 神奇公式 (ROC + EY) [cite: 55-60] ---
+            # --- 神奇公式 (ROC + EY) ---
             ebit = get(self.inc, 'EBIT')
             if ebit == 0: ebit = get(self.inc, 'PRE_TAX_INCOME') + get(self.inc, 'INTEREST_EXPENSE')
             
@@ -196,7 +161,36 @@ class MetricCalculator:
         except: return {}
 
     # ========================================================
-    # 4. F-Score (完整版) [cite: 65]
+    # 3. 營收動能 (Revenue Growth)
+    # ========================================================
+    def calculate_revenue_growth(self):
+        try:
+            if self.rev.empty: return None, None
+            df = self.rev.copy()
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date', ascending=False)
+            val_col = 'revenue'
+            if val_col not in df.columns:
+                if 'value' in df.columns: val_col = 'value'
+                else: return None, None 
+            if len(df) < 2: return None, None
+            curr_rev = df.iloc[0][val_col]
+            last_month_rev = df.iloc[1][val_col]
+            mom = ((curr_rev - last_month_rev) / last_month_rev * 100) if last_month_rev else 0
+            
+            target_date = df.iloc[0]['date'] - pd.DateOffset(years=1)
+            mask = (df['date'] >= target_date - pd.Timedelta(days=5)) & \
+                   (df['date'] <= target_date + pd.Timedelta(days=5))
+            prev_rows = df.loc[mask]
+            yoy = 0
+            if not prev_rows.empty:
+                prev_rev = prev_rows.iloc[0][val_col]
+                yoy = ((curr_rev - prev_rev) / prev_rev * 100) if prev_rev else 0
+            return mom, yoy
+        except: return None, None
+
+    # ========================================================
+    # 4. F-Score (完整版)
     # ========================================================
     def calculate_f_score(self):
         score = 0; details = []
@@ -244,7 +238,7 @@ class MetricCalculator:
         return score, details
 
     # ========================================================
-    # 5. Z-Score (完整版) [cite: 62]
+    # 5. Z-Score (完整版)
     # ========================================================
     def calculate_z_score(self):
         try:
