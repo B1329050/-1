@@ -73,13 +73,26 @@ if run_btn:
             m3.metric("營收 YoY", f"{yoy:.1f}%" if yoy is not None else "N/A", delta_color="normal")
             m4.metric("營收 MoM", f"{mom:.1f}%" if mom is not None else "N/A", delta_color="normal")
 
+           # ... (前段代碼不變) ...
+
             # C. 大師指標
             st.subheader("🎓 華爾街大師指標")
             g1, g2, g3 = st.columns(3)
-            g1.metric("林區 PEG", f"{guru_metrics.get('Lynch PEG', 0):.2f}", help="< 1.0 合理")
-            g2.metric("神奇公式", f"ROC {guru_metrics.get('Magic ROC', 0):.1f}%", help=f"EY {guru_metrics.get('Magic EY', 0):.1f}%")
+            
+            # [修復點] 先檢查 PEG 是否為 None，再決定顯示內容
+            peg = guru_metrics.get('Lynch PEG')
+            peg_display = f"{peg:.2f}" if peg is not None else "N/A (無PE)"
+            
+            g1.metric("林區 PEG", peg_display, help="< 1.0 合理，N/A 代表目前虧損或無本益比")
+            
+            # 神奇公式顯示優化
+            roc_val = guru_metrics.get('Magic ROC', 0)
+            ey_val = guru_metrics.get('Magic EY', 0)
+            g2.metric("神奇公式", f"ROC {roc_val:.1f}%", help=f"盈餘殖利率 (EY): {ey_val:.1f}%")
+            
             g3.metric("F-Score", f"{f_score}/9")
 
+            # ... (後段代碼不變) ...
             # 詳細理由
             st.markdown("#### 📝 評分依據")
             for r in reasons: st.write(r)
