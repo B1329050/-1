@@ -44,12 +44,12 @@ def fetch_financials_from_finmind(stock_id, api_token_str):
     
     results = []
     
-    # 這裡修正了函式名稱 (注意 financial_statement 沒有 s)
+    # [關鍵修正] 這是 FinMind 最準確的函式名稱清單
     datasets = [
-        fm.taiwan_stock_balance_sheet,
-        fm.taiwan_stock_financial_statement,  # <--- 修正點：原本多了一個 s
-        fm.taiwan_stock_cash_flows,
-        fm.taiwan_stock_month_revenue
+        fm.taiwan_stock_balance_sheet,          # 資產負債表
+        fm.taiwan_stock_financial_statement,    # 綜合損益表 (注意是單數 statement)
+        fm.taiwan_stock_cash_flows_statement,   # 現金流量表 (注意 flows 是複數, 且有 _statement)
+        fm.taiwan_stock_month_revenue           # 月營收
     ]
     
     for func in datasets:
@@ -67,7 +67,7 @@ def fetch_financials_from_finmind(stock_id, api_token_str):
             print(f"FinMind Fetch Error: {e}")
             results.append(pd.DataFrame())
 
-    # 補齊 4 個 DataFrame
+    # 補齊 4 個 DataFrame，避免 unpacking 錯誤
     while len(results) < 4:
         results.append(pd.DataFrame())
         
