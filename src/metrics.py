@@ -5,7 +5,7 @@ from .config import MAPPING, EXCLUDED_SECTORS
 
 class MetricCalculator:
     def __init__(self, bs_df, inc_df, cf_df, info):
-        # 數據預處理：將長格式轉為寬格式，並確保 Index 為 Datetime
+        # 數據預處理
         self.bs = self._pivot_data(bs_df)
         self.inc = self._pivot_data(inc_df)
         self.cf = self._pivot_data(cf_df)
@@ -13,20 +13,18 @@ class MetricCalculator:
         
     def _pivot_data(self, df):
         if df.empty: return pd.DataFrame()
-        # 轉換為 pivot table: index=date, columns=type, values=value
+        # 轉換為 pivot table
         pivoted = df.pivot_table(index='date', columns='type', values='value')
-        # 強制轉換 index 為 datetime 格式，並排序 (最新的在最上面)
+        # 強制轉換 index 為 datetime 格式，並排序
         pivoted.index = pd.to_datetime(pivoted.index)
         return pivoted.sort_index(ascending=False)
 
     def _get_prev_value(self, df, curr_date, column):
         """
-        [強健性修正] 嚴謹的 YoY 數據獲取
-        使用 DateOffset 尋找一年前的日期，而非使用 index 位置
+        嚴謹的 YoY 數據獲取
         """
         try:
             target_date = curr_date - pd.DateOffset(years=1)
-            # 在 Index 中尋找該日期 (容許極小誤差通常不需要，財報日期通常一致)
             if target_date in df.index:
                 return df.loc[target_date, column]
             return None
@@ -35,7 +33,7 @@ class MetricCalculator:
 
     def calculate_f_score(self):
         """
-        Piotroski F-Score 計算 (0-9分)
+        Piotroski F-Score 計算
         """
         score = 0
         details = []
@@ -44,74 +42,88 @@ class MetricCalculator:
             if self.inc.empty or self.bs.empty or self.cf.empty:
                 return 0, ["❌ 數據嚴重缺失，無法計算"]
 
-            # 取得最新一季日期
             curr_date = self.inc.index[0]
             
-            # 檢查去年同期數據是否存在
-            prev_date_check = curr_date - pd.DateOffset(years=1)
-            if prev_date_check not in self.inc.index:
-                details.append(f"⚠️ 警告: 缺少 {prev_date_check.date()} 同期數據，部分 YoY 指標可能無法給分。")
-
             # --- 1. 獲利能力 ---
             # ROA > 0
+            # 容錯處理：若找不到 NET_INCOME 嘗試用其他欄位，這裡假設 mapping 正確
             net_income = self.inc.loc[curr_date, MAPPING['NET_INCOME']]
             total_assets = self.bs.loc[curr_date, MAPPING['ASSETS']]
             roa = net_income / total_assets
+            
             if roa > 0: 
                 score += 1
                 details.append("✅ ROA 為正")
             
             # CFO > 0
-            cfo = self.cf.loc[curr_date, MAPPING['OPERATING_CASH_FLOW']]
+            if MAPPING['OPERATING_CASH_FLOW'] in self.cf.columns:
+                cfo = self.cf.loc[curr_date, MAPPING['OPERATING_CASH_FLOW']]
+            else:
+                cfo = 0 # 若無現金流數據，視為 0
+                
             if cfo > 0: 
                 score += 1
                 details.append("✅ 營運現金流為正")
             
-            # ROA 變動 (YoY)
+            # ROA 變動
             prev_net_income = self._get_prev_value(self.inc, curr_date, MAPPING['NET_INCOME'])
             prev_total_assets = self._get_prev_value(self.bs, curr_date, MAPPING['ASSETS'])
+            
             if prev_net_income is not None and prev_total_assets is not None:
                 prev_roa = prev_net_income / prev_total_assets
                 if roa > prev_roa: 
                     score += 1
                     details.append("✅ ROA 優於去年")
             
-            # 應計項目: CFO > Net Income
+            # 應計項目
             if cfo > net_income: 
                 score += 1
-                details.append("✅ 現金流大於淨利 (盈餘品質佳)")
+                details.append("✅ 現金流大於淨利")
 
-            # --- 2. 財務槓桿與流動性 ---
-            # 長期負債比率下降
-            curr_liab = self.bs.loc[curr_date, MAPPING['NON_CURRENT_LIABILITIES']]
-            prev_liab = self._get_prev_value(self.bs, curr_date, MAPPING['NON_CURRENT_LIABILITIES'])
-            if prev_liab is not None and prev_total_assets is not None:
-                curr_lev = curr_liab / total_assets
-                prev_lev = prev_liab / prev_total_assets
+            # --- 2. 財務槓桿與流動性 (修正重點) ---
+            
+            # [修正] 長期負債比率下降
+            # 不直接抓 NonCurrentLiabilities，改用 (總負債 - 流動負債) 計算，避免 KeyError
+            
+            # 取得當期數據
+            curr_total_liab = self.bs.loc[curr_date, MAPPING['LIABILITIES']]
+            curr_current_liab = self.bs.loc[curr_date, MAPPING['CURRENT_LIABILITIES']]
+            curr_long_term_liab = curr_total_liab - curr_current_liab
+            
+            # 取得去年數據
+            prev_total_liab = self._get_prev_value(self.bs, curr_date, MAPPING['LIABILITIES'])
+            prev_current_liab = self._get_prev_value(self.bs, curr_date, MAPPING['CURRENT_LIABILITIES'])
+            
+            if prev_total_liab is not None and prev_current_liab is not None:
+                prev_long_term_liab = prev_total_liab - prev_current_liab
+                
+                # 計算比率 (長期負債 / 總資產)
+                curr_lev = curr_long_term_liab / total_assets
+                prev_lev = prev_long_term_liab / prev_total_assets
+                
                 if curr_lev <= prev_lev: 
                     score += 1
                     details.append("✅ 長期負債比率下降")
             
             # 流動比率上升
-            curr_ratio = self.bs.loc[curr_date, MAPPING['CURRENT_ASSETS']] / self.bs.loc[curr_date, MAPPING['CURRENT_LIABILITIES']]
+            curr_ratio = self.bs.loc[curr_date, MAPPING['CURRENT_ASSETS']] / curr_current_liab
             prev_curr_assets = self._get_prev_value(self.bs, curr_date, MAPPING['CURRENT_ASSETS'])
-            prev_curr_liab = self._get_prev_value(self.bs, curr_date, MAPPING['CURRENT_LIABILITIES'])
-            if prev_curr_assets is not None and prev_curr_liab is not None:
-                prev_ratio = prev_curr_assets / prev_curr_liab
+            
+            if prev_curr_assets is not None and prev_current_liab is not None:
+                prev_ratio = prev_curr_assets / prev_current_liab
                 if curr_ratio > prev_ratio: 
                     score += 1
                     details.append("✅ 流動比率提升")
             
-            # 未增資 (股本變動檢查)
+            # 未增資
             curr_share = self.bs.loc[curr_date, 'CommonStock'] if 'CommonStock' in self.bs.columns else 0
             prev_share = self._get_prev_value(self.bs, curr_date, 'CommonStock')
             if prev_share is not None:
-                # 若股本增加幅度 < 5% (假設為盈餘轉增資)，視為未進行現金增資
                 if curr_share <= prev_share * 1.05:
                     score += 1
                     details.append("✅ 無顯著現金增資")
             else:
-                score += 1 # 無數據時從寬認定
+                score += 1
                 details.append("⚠️ 無股本數據，預設通過")
 
             # --- 3. 營運效率 ---
@@ -137,24 +149,22 @@ class MetricCalculator:
                     details.append("✅ 資產週轉率提升")
                 
         except Exception as e:
-            details.append(f"❌ 計算錯誤: {str(e)}")
+            details.append(f"⚠️ 計算中斷: {str(e)} (可能某個會計科目缺失)")
             
         return score, details
 
     def calculate_z_score(self):
         """
         Altman Z-Score 計算
-        Z = 1.2X1 + 1.4X2 + 3.3X3 + 0.6X4 + 1.0X5
         """
         try:
             if self.bs.empty or self.inc.empty:
                 return None, "數據缺失"
 
-            # 產業濾網：檢查是否為金融業
+            # 產業濾網
             sector = self.info.get('sector', '')
-            # 簡單關鍵字過濾，也可結合 config 中的代碼過濾
             if 'Financial' in sector or 'Bank' in sector or 'Insurance' in sector:
-                return None, "⚠️ 金融業不適用 Altman Z-Score"
+                return None, "⚠️ 金融業不適用"
 
             date = self.bs.index[0]
             
@@ -163,15 +173,20 @@ class MetricCalculator:
             curr_assets = self.bs.loc[date, MAPPING['CURRENT_ASSETS']]
             curr_liab = self.bs.loc[date, MAPPING['CURRENT_LIABILITIES']]
             total_liab = self.bs.loc[date, MAPPING['LIABILITIES']]
-            retained_earnings = self.bs.loc[date, MAPPING['RETAINED_EARNINGS']]
             revenue = self.inc.loc[date, MAPPING['REVENUE']]
             
-            # X3: EBIT (若無 EBIT，用 稅前淨利 + 利息費用 估算)
+            # X2: 保留盈餘 (容錯處理)
+            retained_earnings = 0
+            if MAPPING['RETAINED_EARNINGS'] in self.bs.columns:
+                retained_earnings = self.bs.loc[date, MAPPING['RETAINED_EARNINGS']]
+            elif 'UnappropriatedRetainedEarnings' in self.bs.columns: # FinMind 另一種常見命名
+                 retained_earnings = self.bs.loc[date, 'UnappropriatedRetainedEarnings']
+
+            # X3: EBIT
             if 'EBIT' in self.inc.columns:
                 ebit = self.inc.loc[date, 'EBIT']
             else:
                 pre_tax = self.inc.loc[date, MAPPING['PRE_TAX_INCOME']]
-                # 部分公司可能無利息費用欄位，設為 0
                 interest = self.inc.loc[date, MAPPING['INTEREST_EXPENSE']] if MAPPING['INTEREST_EXPENSE'] in self.inc.columns else 0
                 ebit = pre_tax + interest
             
@@ -181,7 +196,7 @@ class MetricCalculator:
             x1 = (curr_assets - curr_liab) / total_assets
             x2 = retained_earnings / total_assets
             x3 = ebit / total_assets
-            x4 = market_cap / total_liab # 使用市值
+            x4 = market_cap / total_liab
             x5 = revenue / total_assets
             
             z_score = 1.2*x1 + 1.4*x2 + 3.3*x3 + 0.6*x4 + 1.0*x5
