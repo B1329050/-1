@@ -2,7 +2,7 @@ streamlit
 pandas
 numpy
 yfinance
-finmind
+finmind>=1.7.0
 plotly
 requests
 tqdm
