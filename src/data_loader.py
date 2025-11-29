@@ -9,12 +9,24 @@ from .config import DATASETS
 
 class DataEngine:
     def __init__(self, token=None):
+        # 初始化 DataLoader
         self.fm = DataLoader()
         self.token = token
-        if self.token:
-            self.fm.login_by_token(api_token=token)
+        
+        # --- 穩健的登入邏輯 ---
+        # 只有當 Token 有值且不為空字串時才嘗試登入
+        if self.token and str(self.token).strip():
+            try:
+                # 嘗試使用 Token 登入
+                self.fm.login_by_token(api_token=str(self.token).strip())
+                # 這裡不顯示成功訊息以免干擾介面，失敗才會警告
+            except Exception as e:
+                # 登入失敗時，捕捉錯誤但不讓程式當機
+                print(f"FinMind 登入失敗 (將降級為免費模式): {e}")
+                self.token = None # 強制切換回免費模式
         else:
-            print("⚠️ 警告: 未檢測到 FinMind Token。將使用免費限制模式 (可能會遇到請求頻率限制)。")
+            # 如果使用者沒輸入，就確保 token 是 None
+            self.token = None
 
     @st.cache_data(ttl=3600)
     def get_price_data(self, ticker):
@@ -31,7 +43,8 @@ class DataEngine:
             info = stock.info
             return df, info
         except Exception as e:
-            st.error(f"yfinance 數據獲取失敗: {e}")
+            # 捕捉錯誤並回傳空值，避免當機
+            print(f"yfinance Error: {e}")
             return pd.DataFrame(), {}
 
     @st.cache_data(ttl=86400)
@@ -39,10 +52,10 @@ class DataEngine:
         """
         獲取基本面數據 (FinMind)
         """
-        # 拉取 5 年數據以確保有足夠的歷史資料做 YoY (防止 index error)
+        # 拉取 5 年數據
         start_date = (datetime.now() - timedelta(days=365*5)).strftime('%Y-%m-%d')
         
-        # 定義要拉取的資料集函數
+        # 定義要拉取的資料集
         fetch_funcs = [
             self.fm.taiwan_stock_balance_sheet,
             self.fm.taiwan_stock_financial_statements,
@@ -51,25 +64,33 @@ class DataEngine:
         ]
         
         results = []
-        for fetch_func in fetch_funcs:
+        
+        # 逐一拉取報表
+        for func in fetch_funcs:
             try:
                 # 執行 API 請求
-                df = fetch_func(stock_id=stock_id, start_date=start_date)
-                results.append(df)
+                df = func(stock_id=stock_id, start_date=start_date)
                 
-                # [重要] 如果沒有 Token，每抓一個表強制休息 3 秒，避免被 Server 封鎖
+                # 檢查回傳的是不是 DataFrame (有時候 FinMind 會回傳錯誤訊息字典)
+                if isinstance(df, pd.DataFrame):
+                    results.append(df)
+                else:
+                    results.append(pd.DataFrame()) # 格式不對就塞空表
+                
+                # [保護機制] 如果是免費模式，強制休息，避免被封鎖
                 if not self.token:
-                    time.sleep(3) 
+                    time.sleep(2) 
+                    
             except Exception as e:
-                st.error(f"FinMind 數據拉取失敗: {e}")
-                results.append(pd.DataFrame()) # 失敗時塞入空 DataFrame
+                # 捕捉單一報表拉取失敗，塞入空表，讓其他報表繼續跑
+                print(f"FinMind 拉取單項失敗: {e}")
+                results.append(pd.DataFrame())
 
-        # 依序回傳：資產負債表, 損益表, 現金流量表, 月營收
+        # 確保回傳四個 DataFrame (即使是空的)
+        while len(results) < 4:
+            results.append(pd.DataFrame())
+
         return results[0], results[1], results[2], results[3]
 
     def get_realtime_mops_revenue(self, stock_id):
-        """
-        MOPS 爬蟲預留接口
-        目前回傳 None，由 FinMind 數據補位。
-        """
         return None
