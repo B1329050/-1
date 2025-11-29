@@ -1,74 +1,61 @@
 # src/strategy.py
 import pandas as pd
 
-def generate_signals(f_score, z_score, info, mom, yoy):
+def generate_signals(f_score, z_score, info, mom, yoy, guru_metrics):
     """
-    嚴格執行 [研究報告 表2：台股輔助買賣程式之估值加扣分邏輯表]
+    整合大師指標的綜合評分
     """
     total_score = 0
     signal_reasons = []
 
-    # --- 1. 基本面體質 (F-Score) ---
+    # 1. F-Score
     if f_score >= 8:
         total_score += 2
         signal_reasons.append(f"✅ F-Score {f_score} (體質強健 +2)")
-    elif 5 <= f_score <= 7:
-        total_score += 1
-        signal_reasons.append(f"🔹 F-Score {f_score} (體質穩健 +1)")
     elif f_score <= 3:
         total_score -= 2
         signal_reasons.append(f"⚠️ F-Score {f_score} (體質衰退 -2)")
-    else:
-        signal_reasons.append(f"🔸 F-Score {f_score} (中性 0)")
 
-    # --- 2. 破產風險 (Z-Score) ---
-    if z_score is not None:
-        if z_score > 2.99:
-            total_score += 1
-            signal_reasons.append(f"✅ Z-Score {z_score:.2f} (安全區域 +1)")
-        elif z_score < 1.81:
-            total_score -= 3
-            signal_reasons.append(f"💀 Z-Score {z_score:.2f} (困境區域 -3)")
-        else:
-            signal_reasons.append(f"🔸 Z-Score {z_score:.2f} (灰色區域 0)")
-    else:
-        signal_reasons.append("ℹ️ Z-Score 不適用 (金融業或數據不足)")
+    # 2. Z-Score
+    if z_score is not None and z_score < 1.81:
+        total_score -= 3
+        signal_reasons.append(f"💀 Z-Score {z_score:.2f} (破產風險 -3)")
 
-    # --- 3. 相對估值 (PE Ratio) ---
-    pe = info.get('trailingPE', None)
-    if pe:
-        if pe < 12:
-            total_score += 1
-            signal_reasons.append(f"✅ 本益比 {pe:.1f} < 12 (價格低估 +1)")
-        elif pe > 25:
-            total_score -= 1
-            signal_reasons.append(f"⚠️ 本益比 {pe:.1f} > 25 (價格過高 -1)")
-
-    # --- 4. 資產價值 (PB Ratio) ---
-    pb = info.get('priceToBook', None)
-    if pb and pb < 1.0:
-        total_score += 1
-        signal_reasons.append(f"✅ 股價淨值比 {pb:.2f} < 1.0 (深度價值 +1)")
-
-    # --- 5. 成長動能 (Revenue) [報告 2.3.1 重點] ---
-    if yoy is not None and mom is not None:
-        if yoy > 20:
-            total_score += 1
-            signal_reasons.append(f"🚀 營收年增率 {yoy:.1f}% > 20% (動能強勁 +1)")
-        if mom > 10:
-            total_score += 1
-            signal_reasons.append(f"🔥 營收月增率 {mom:.1f}% > 10% (加速升溫 +1)")
-    else:
-        signal_reasons.append("ℹ️ 無法取得最新營收數據 (略過動能加分)")
-
-    # --- 6. 財報操弄 (M-Score) [報告 3.3] ---
-    # 註：完整 M-Score 需 8 個變數，為避免數據不足導致誤判，
-    # 此處僅作為提醒，若未來數據庫擴充應補上：若 M-Score > -1.78 則 total_score = -99 (直接剔除)
+    # 3. 葛拉漢估值 [報告 2.1.1]
+    price = info.get('currentPrice', info.get('regularMarketPreviousClose', 0))
+    graham_num = guru_metrics.get('Graham Number', 0)
+    if price > 0 and graham_num > 0:
+        if price < graham_num * 0.8: # 給予 20% 安全邊際
+            total_score += 2
+            signal_reasons.append(f"💎 股價 ({price}) 低於葛拉漢數 ({graham_num:.1f}) (深度價值 +2)")
     
-    # --- 生成最終決策 (報告 4.2) ---
+    # 4. 林區 PEG [報告 2.2.1]
+    peg = guru_metrics.get('Lynch PEG')
+    if peg is not None:
+        if peg < 0.5:
+            total_score += 2
+            signal_reasons.append(f"🚀 林區 PEG {peg:.2f} < 0.5 (極度低估 +2)")
+        elif peg < 1.0:
+            total_score += 1
+            signal_reasons.append(f"🔹 林區 PEG {peg:.2f} < 1.0 (合理價格 +1)")
+        elif peg > 2.0:
+            total_score -= 1
+            signal_reasons.append(f"⚠️ 林區 PEG {peg:.2f} > 2.0 (成長跟不上估值 -1)")
+
+    # 5. 神奇公式 ROC [報告 2.3.1]
+    roc = guru_metrics.get('Magic ROC', 0)
+    if roc > 30: # 30% 以上視為極高效率
+        total_score += 1
+        signal_reasons.append(f"✨ 資本報酬率 (ROC) {roc:.1f}% > 30% (資金效率極佳 +1)")
+
+    # 6. 營收動能
+    if yoy and yoy > 20:
+        total_score += 1
+        signal_reasons.append(f"🔥 營收年增 {yoy:.1f}% > 20% (動能強勁 +1)")
+
+    # 最終決策
     action = "觀望 (Watch)"
     color = "orange"
-    
     if total_score >= 5:
         action = "強力買進 (Strong Buy)"
         color = "green"
@@ -82,14 +69,6 @@ def generate_signals(f_score, z_score, info, mom, yoy):
     return total_score, action, color, signal_reasons
 
 def suggest_order_type(action):
-    """
-    [嚴格執行報告 5.2 & 5.3] 延遲對策
-    """
     if "Buy" in action or "Hold" in action:
-        return """
-        **報告章節 5.2 執行策略:**
-        * **盤後佈局 (EOD):** 由於使用免費 API 存在 20 分鐘延遲，嚴禁盤中市價單。
-        * **建議操作:** 於今日盤後掛入明日開盤前 **限價單 (Limit Order)**。
-        * **尾盤操作:** 若為 13:25，可掛入 **ROD** 單。
-        """
-    return "無操作建議"
+        return "**建議操作:** 依照報告建議，因應免費數據延遲，請使用 **盤後掛單** 或 **尾盤 ROD 限價單**。"
+    return ""
