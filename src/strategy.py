@@ -1,14 +1,13 @@
-# src/strategy.py
 import pandas as pd
 
 def generate_signals(f_score, z_score, info, mom, yoy, guru_metrics):
     """
-    整合大師指標的綜合評分
+    整合大師指標的綜合評分 (符合研究報告標準)
     """
     total_score = 0
     signal_reasons = []
 
-    # 1. F-Score
+    # 1. F-Score (皮爾托斯基) [cite: 64]
     if f_score >= 8:
         total_score += 2
         signal_reasons.append(f"✅ F-Score {f_score} (體質強健 +2)")
@@ -16,20 +15,29 @@ def generate_signals(f_score, z_score, info, mom, yoy, guru_metrics):
         total_score -= 2
         signal_reasons.append(f"⚠️ F-Score {f_score} (體質衰退 -2)")
 
-    # 2. Z-Score
+    # 2. Z-Score (奧特曼)
     if z_score is not None and z_score < 1.81:
         total_score -= 3
         signal_reasons.append(f"💀 Z-Score {z_score:.2f} (破產風險 -3)")
 
-    # 3. 葛拉漢估值 [報告 2.1.1]
+    # 3. 葛拉漢防禦型策略 [cite: 9, 26]
+    # 修正：使用 5 年平均 EPS 算出的葛拉漢數
     price = info.get('currentPrice', info.get('regularMarketPreviousClose', 0))
     graham_num = guru_metrics.get('Graham Number', 0)
-    if price > 0 and graham_num > 0:
-        if price < graham_num * 0.8: # 給予 20% 安全邊際
-            total_score += 2
-            signal_reasons.append(f"💎 股價 ({price}) 低於葛拉漢數 ({graham_num:.1f}) (深度價值 +2)")
+    curr_ratio = guru_metrics.get('Current Ratio', 0)
     
-    # 4. 林區 PEG [報告 2.2.1]
+    if price > 0 and graham_num > 0:
+        # 價格低於價值 (安全邊際) 且 財務健康 (流動比率 > 1.5, 報告標準為 2.0 但可適度放寬)
+        if price < graham_num:
+            if curr_ratio > 1.5:
+                total_score += 2
+                signal_reasons.append(f"💎 葛拉漢價值股 (價 < {graham_num:.1f} 且 流動比 {curr_ratio:.1f} > 1.5) (+2)")
+            else:
+                # 便宜但不夠健康
+                total_score += 1
+                signal_reasons.append(f"🔹 價格低於葛拉漢數 {graham_num:.1f} (但流動比偏低) (+1)")
+
+    # 4. 林區 PEG (Yield-Adjusted) [cite: 36]
     peg = guru_metrics.get('Lynch PEG')
     if peg is not None:
         if peg < 0.5:
@@ -42,13 +50,20 @@ def generate_signals(f_score, z_score, info, mom, yoy, guru_metrics):
             total_score -= 1
             signal_reasons.append(f"⚠️ 林區 PEG {peg:.2f} > 2.0 (成長跟不上估值 -1)")
 
-    # 5. 神奇公式 ROC [報告 2.3.1]
+    # 5. 神奇公式 (Magic Formula) [cite: 55-60]
+    # 修正：同時檢查 ROC (品質) 與 Earnings Yield (價格)
     roc = guru_metrics.get('Magic ROC', 0)
-    if roc > 30: # 30% 以上視為極高效率
-        total_score += 1
-        signal_reasons.append(f"✨ 資本報酬率 (ROC) {roc:.1f}% > 30% (資金效率極佳 +1)")
+    ey = guru_metrics.get('Magic EY', 0)
+    
+    # 門檻設定：ROC > 20% (相當優秀) 且 EY > 5% (相當於本益比 < 20)
+    if roc > 20 and ey > 5:
+        total_score += 2
+        signal_reasons.append(f"✨ 神奇公式選股 (ROC {roc:.1f}% > 20 且 EY {ey:.1f}% > 5) (+2)")
+    elif roc > 20:
+        # 只符合好公司，但不便宜 -> 不加分 (避免買貴)
+        signal_reasons.append(f"🔸 神奇公式: 公司優質 (ROC {roc:.1f}%) 但不夠便宜 (EY {ey:.1f}%)")
 
-    # 6. 營收動能
+    # 6. 營收動能 [cite: 108] (雖然報告 2.3.1 是講爬蟲，但營收動能符合成長股邏輯)
     if yoy and yoy > 20:
         total_score += 1
         signal_reasons.append(f"🔥 營收年增 {yoy:.1f}% > 20% (動能強勁 +1)")
