@@ -7,8 +7,7 @@ from datetime import datetime, timedelta
 import time
 from .config import DATASETS
 
-# --- 獨立的快取函式 (放在 Class 外面) ---
-# 這樣 Streamlit 就不用去 Hash 複雜的 self 物件，只須 Hash 簡單的字串參數
+# --- 獨立的快取函式 (放在 Class 外面以避免 Hash 錯誤) ---
 
 @st.cache_data(ttl=3600)
 def fetch_price_from_yahoo(ticker):
@@ -30,7 +29,6 @@ def fetch_price_from_yahoo(ticker):
 def fetch_financials_from_finmind(stock_id, api_token_str):
     """
     獨立獲取財報函式 (FinMind)
-    參數 api_token_str 只傳字串，方便 Streamlit 快取
     """
     fm = DataLoader()
     
@@ -39,15 +37,17 @@ def fetch_financials_from_finmind(stock_id, api_token_str):
         try:
             fm.login_by_token(api_token=str(api_token_str).strip())
         except Exception:
-            pass # 登入失敗就用免費模式，不報錯
+            pass # 登入失敗就用免費模式
 
     # 拉取 5 年數據
     start_date = (datetime.now() - timedelta(days=365*5)).strftime('%Y-%m-%d')
     
     results = []
+    
+    # 這裡修正了函式名稱 (注意 financial_statement 沒有 s)
     datasets = [
         fm.taiwan_stock_balance_sheet,
-        fm.taiwan_stock_financial_statements,
+        fm.taiwan_stock_financial_statement,  # <--- 修正點：原本多了一個 s
         fm.taiwan_stock_cash_flows,
         fm.taiwan_stock_month_revenue
     ]
@@ -60,10 +60,11 @@ def fetch_financials_from_finmind(stock_id, api_token_str):
             else:
                 results.append(pd.DataFrame())
             
-            # 如果是免費模式 (token 為空或 None)，休息一下避免封鎖
+            # 免費模式休息機制
             if not api_token_str:
                 time.sleep(2)
-        except Exception:
+        except Exception as e:
+            print(f"FinMind Fetch Error: {e}")
             results.append(pd.DataFrame())
 
     # 補齊 4 個 DataFrame
@@ -73,18 +74,16 @@ def fetch_financials_from_finmind(stock_id, api_token_str):
     return results[0], results[1], results[2], results[3]
 
 
-# --- DataEngine 類別 (變成單純的呼叫者) ---
+# --- DataEngine 類別 ---
 
 class DataEngine:
     def __init__(self, token=None):
         self.token = token
 
     def get_price_data(self, ticker):
-        # 呼叫上面的獨立快取函式
         return fetch_price_from_yahoo(ticker)
 
     def get_financial_data(self, stock_id):
-        # 呼叫上面的獨立快取函式，並把 token 當成字串傳進去
         return fetch_financials_from_finmind(stock_id, self.token)
 
     def get_realtime_mops_revenue(self, stock_id):
