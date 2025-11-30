@@ -7,7 +7,7 @@ from src.strategy import generate_signals, suggest_order_type
 
 st.set_page_config(page_title="台股全方位量化系統", layout="wide")
 st.title("🇹🇼 台股在地化全方位決策系統")
-st.markdown("### 整合融資籌碼、NCAV 與大師分類模型 (防呆修復版)")
+st.markdown("### 整合融資籌碼、NCAV 與大師分類模型 ")
 
 with st.sidebar:
     st.header("系統設定")
