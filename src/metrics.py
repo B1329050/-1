@@ -42,43 +42,37 @@ class MetricCalculator:
         except: return None
 
     # ========================================================
-    # 1. 籌碼分析 (暴力清洗版)
+    # 1. 籌碼分析 (三大法人)
     # ========================================================
     def calculate_chip_metrics(self):
         try:
             if self.chip.empty: return {}
             
             df = self.chip.copy()
-            # 1. 欄位全轉小寫 (解決 Name/name Buy/buy 問題)
-            df.columns = [c.lower().strip() for c in df.columns]
-            
             df['date'] = pd.to_datetime(df['date'])
             df = df.sort_values('date', ascending=True)
             
-            # 2. 尋找 'name' 欄位
-            name_col = 'name' if 'name' in df.columns else ('type' if 'type' in df.columns else None)
-            if not name_col: return {}
+            # 確保 name 欄位存在 (轉字串比對)
+            if 'name' not in df.columns: return {}
+            df['name'] = df['name'].astype(str)
 
-            # 3. 確保買賣數據是數字 (解決 '1,000' 字串問題)
-            for col in ['buy', 'sell']:
-                if col in df.columns:
-                    # 強制轉數字，無法轉的變 NaN 再變 0
-                    df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+            # 雙語比對 (Foreign/外資, Trust/投信)
+            foreign = df[df['name'].str.contains('Foreign|外資', case=False, regex=True)].tail(3)
+            trust = df[df['name'].str.contains('Trust|投信', case=False, regex=True)].tail(10)
             
-            # 計算淨買賣
-            df['net'] = df['buy'] - df['sell']
+            # 外資
+            foreign_net = 0
+            foreign_consecutive = False
+            if not foreign.empty:
+                net = foreign['buy'] - foreign['sell']
+                foreign_net = net.sum()
+                if len(foreign) >= 3:
+                    foreign_consecutive = (net > 0).all()
 
-            # A. 外資 (Foreign)
-            mask_foreign = df[name_col].astype(str).str.contains('Foreign|外資', case=False, regex=True)
-            foreign = df[mask_foreign].tail(3)
-            
-            foreign_net = foreign['net'].sum() if not foreign.empty else 0
-            foreign_consecutive = (foreign['net'] > 0).all() if len(foreign) >= 3 else False
-
-            # B. 投信 (Trust)
-            mask_trust = df[name_col].astype(str).str.contains('Trust|投信', case=False, regex=True)
-            trust = df[mask_trust].tail(10)
-            trust_net = trust['net'].sum() if not trust.empty else 0
+            # 投信
+            trust_net = 0
+            if not trust.empty:
+                trust_net = (trust['buy'] - trust['sell']).sum()
             
             market_cap = self.info.get('marketCap', 0)
             is_small_cap = 0 < market_cap < (50 * 100000000) 
@@ -91,36 +85,34 @@ class MetricCalculator:
                 "Trust Active Buy": trust_active,
                 "Is Small Cap": is_small_cap
             }
-        except Exception as e:
-            return {} # 靜默失敗，外層會顯示為 0
+        except: return {}
 
     # ========================================================
-    # 2. 融資分析 (暴力清洗版)
+    # 2. 融資分析 (精準對應你的截圖)
     # ========================================================
     def calculate_margin_metrics(self):
         try:
             if self.margin.empty: return {}
             df = self.margin.copy()
-            df.columns = [c.lower().strip() for c in df.columns] # 轉小寫
             df['date'] = pd.to_datetime(df['date'])
             df = df.sort_values('date', ascending=True)
             
-            # 模糊搜尋 'balance'
-            target_col = None
-            for c in df.columns:
-                if 'balance' in c and ('margin' in c or 'purchase' in c):
-                    target_col = c; break
+            # [精準修正] 根據你的截圖，欄位是 MarginPurchaseTodayBalance
+            col_name = 'MarginPurchaseTodayBalance'
             
-            if not target_col: return {}
+            # 如果欄位不存在 (FinMind 版本差異)，嘗試其他可能
+            if col_name not in df.columns:
+                for c in ['MarginPurchaseBalance', 'MarginBalance']:
+                    if c in df.columns: col_name = c; break
             
-            # 強制轉數字
-            df[target_col] = pd.to_numeric(df[target_col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+            if col_name not in df.columns: return {}
 
             df_recent = df.tail(20)
             if len(df_recent) < 2: return {}
             
-            latest = df_recent.iloc[-1][target_col]
-            prev = df_recent.iloc[-6][target_col] if len(df_recent) >= 6 else df_recent.iloc[0][target_col]
+            latest = df_recent.iloc[-1][col_name]
+            prev_idx = -6 if len(df_recent) >= 6 else 0
+            prev = df_recent.iloc[prev_idx][col_name]
             
             return {
                 "Margin Increasing": latest > prev,
@@ -129,9 +121,7 @@ class MetricCalculator:
             }
         except: return {}
 
-    # --- 以下功能維持完整版 (Guru, Revenue, F-Score, Z-Score) ---
-    # 為確保不漏，這裡再次完整列出其他函式
-    
+    # --- 以下維持原樣 (Guru, Revenue, F-Score, Z-Score) ---
     def calculate_guru_metrics(self):
         try:
             if self.bs.empty or self.inc.empty: return {}
