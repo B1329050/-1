@@ -7,7 +7,7 @@ import time
 import functools
 from .config import DATASETS
 
-# --- [實作] API 速率限制裝飾器 ---
+# --- API 速率限制裝飾器 ---
 def rate_limit_handler(retries=3, delay=5):
     def decorator(func):
         @functools.wraps(func)
@@ -43,7 +43,7 @@ def fetch_price_from_yahoo(ticker):
 @st.cache_data(ttl=86400)
 def fetch_financials_from_finmind(stock_id, api_token_str):
     """
-    獲取六大報表 (使用動態屬性呼叫，避免 AttributeError)
+    獲取 7 大報表 (使用動態屬性呼叫，避免 AttributeError)
     """
     fm = DataLoader()
     if api_token_str and str(api_token_str).strip():
@@ -57,21 +57,21 @@ def fetch_financials_from_finmind(stock_id, api_token_str):
     def safe_fetch(func, **kwargs):
         return func(**kwargs)
 
-    # [關鍵修正] 使用字串列表，而非直接呼叫函式物件
-    # 這樣可以先檢查 hasattr，避免程式直接崩潰
+    # [關鍵修正] 這裡必須有 7 個項目！
     dataset_method_names = [
         'taiwan_stock_balance_sheet',
         'taiwan_stock_financial_statement',
         'taiwan_stock_cash_flows_statement',
         'taiwan_stock_month_revenue',
         'taiwan_stock_dividend',
-        'taiwan_stock_institutional_investors_buy_sell' # 容易報錯的項目
+        'taiwan_stock_institutional_investors_buy_sell',
+        'taiwan_stock_margin_purchase_short_sale' # [補回] 融資融券
     ]
     
     results = []
     
     for method_name in dataset_method_names:
-        # 動態檢查 DataLoader 是否有這個功能
+        # 動態檢查 DataLoader 是否有這個功能 (防崩潰核心)
         if hasattr(fm, method_name):
             func = getattr(fm, method_name)
             df = safe_fetch(func, stock_id=stock_id, start_date=start_date)
@@ -80,16 +80,15 @@ def fetch_financials_from_finmind(stock_id, api_token_str):
             else:
                 results.append(pd.DataFrame())
         else:
-            # 如果 FinMind 版本太舊沒有這個功能，回傳空表 (不報錯)
             print(f"⚠️ 警告: 當前 FinMind 版本不支援 {method_name}")
             results.append(pd.DataFrame())
         
         if not api_token_str: time.sleep(1.5)
 
-    # 補齊 6 個 DataFrame，避免 unpacking error
-    while len(results) < 6: results.append(pd.DataFrame())
+    # 補齊 7 個 DataFrame，避免 unpacking error
+    while len(results) < 7: results.append(pd.DataFrame())
         
-    return results[0], results[1], results[2], results[3], results[4], results[5]
+    return results[0], results[1], results[2], results[3], results[4], results[5], results[6]
 
 
 # --- DataEngine 類別 ---
