@@ -34,18 +34,23 @@ if run_btn:
             bs, inc, cf, rev, div, chip, margin = engine.get_financial_data(stock_id)
             
             # --- 除錯模式顯示 ---
-            if show_debug:
-                with st.expander("🔍 原始數據檢查"):
-                    st.write(f"籌碼資料筆數: {len(chip)}")
-                    if not chip.empty: st.dataframe(chip.tail(5))
-                    else: st.error("⚠️ 籌碼資料為空！可能是 API 逾時或代號錯誤。")
-                    
-                    st.write(f"融資資料筆數: {len(margin)}")
-                    if not margin.empty: st.dataframe(margin.tail(5))
+           # main.py 的一部分，請替換 if show_debug: 這一塊
 
-            if bs.empty or inc.empty:
-                st.error("❌ 基礎財報數據不足，無法分析。")
-                st.stop()
+            # --- 除錯模式顯示 ---
+            if show_debug:
+                with st.expander("🔍 原始數據檢查 (Debug)"):
+                    st.write("--- 籌碼數據 (Chip) ---")
+                    if not chip.empty: 
+                        st.write(f"資料筆數: {len(chip)}")
+                        st.write(f"欄位名稱: {list(chip.columns)}") # 秀出欄位名
+                        st.dataframe(chip.tail(5)) # 秀出最近5筆
+                    else: 
+                        st.error("⚠️ 籌碼資料 (Chip) 為空！")
+                    
+                    st.write("--- 融資數據 (Margin) ---")
+                    if not margin.empty:
+                        st.write(f"欄位名稱: {list(margin.columns)}")
+                        st.dataframe(margin.tail(5))
             
             # 2. 計算指標
             calculator = MetricCalculator(bs, inc, cf, rev, div, chip, margin, info)
