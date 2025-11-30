@@ -7,30 +7,47 @@ from src.strategy import generate_signals, suggest_order_type
 
 st.set_page_config(page_title="台股全方位量化系統", layout="wide")
 st.title("🇹🇼 台股在地化全方位決策系統")
-st.markdown("### 整合融資籌碼、NCAV 與大師分類模型 (透明化版)")
+st.markdown("### 整合融資籌碼、NCAV 與大師分類模型 (防呆修復版)")
 
 with st.sidebar:
     st.header("系統設定")
-    stock_id = st.text_input("股票代號", value="2330")
+    stock_id = st.text_input("股票代號", value="2330", help="輸入代號，如 2330")
+    
     if "FINMIND_TOKEN" in st.secrets:
         token = st.secrets["FINMIND_TOKEN"]
         st.success("✅ Token 已載入")
     else:
         token = st.text_input("FinMind Token", type="password")
+    
     run_btn = st.button("執行全方位分析", type="primary")
+    
+    st.divider()
+    show_debug = st.checkbox("🔧 顯示原始數據狀態 (除錯用)")
 
 if run_btn:
     engine = DataEngine(token=token if token else None)
     
-    with st.spinner(f"正在擷取 7 大資料集分析 {stock_id} ..."):
+    with st.spinner(f"正在分析 {stock_id} (籌碼/財報/營收)..."):
         try:
+            # 1. 獲取數據
             price_df, info = engine.get_price_data(stock_id)
             bs, inc, cf, rev, div, chip, margin = engine.get_financial_data(stock_id)
             
+            # --- 除錯模式顯示 ---
+            if show_debug:
+                with st.expander("🔍 原始數據檢查"):
+                    st.write(f"籌碼資料筆數: {len(chip)}")
+                    if not chip.empty: st.dataframe(chip.tail(5))
+                    else: st.error("⚠️ 籌碼資料為空！可能是 API 逾時或代號錯誤。")
+                    
+                    st.write(f"融資資料筆數: {len(margin)}")
+                    if not margin.empty: st.dataframe(margin.tail(5))
+
             if bs.empty or inc.empty:
-                st.error("❌ 數據不足")
+                st.error("❌ 基礎財報數據不足，無法分析。")
                 st.stop()
             
+            # 2. 計算指標
             calculator = MetricCalculator(bs, inc, cf, rev, div, chip, margin, info)
             
             f_score, f_details = calculator.calculate_f_score()
@@ -40,6 +57,7 @@ if run_btn:
             chip_metrics = calculator.calculate_chip_metrics()
             margin_metrics = calculator.calculate_margin_metrics()
             
+            # 3. 策略生成
             total_score, action, color, reasons = generate_signals(
                 f_score, z_score, info, mom, yoy, guru_metrics, chip_metrics, margin_metrics
             )
@@ -65,25 +83,20 @@ if run_btn:
 
             st.divider()
             
-            # B. 籌碼與融資 (透明化儀表板)
+            # B. 籌碼與融資 (儀表板)
             st.subheader("📊 籌碼與散戶指標")
             m1, m2, m3, m4 = st.columns(4)
             
-            # 外資
-            f_net = chip_metrics.get("Foreign Net (3d)", 0) / 1000 # 張數
-            f_label = "外資 (3日)"
-            m1.metric(f_label, f"{int(f_net)} 張", delta="連買" if chip_metrics.get("Foreign Consecutive") else "無連買", delta_color="normal")
+            f_net = chip_metrics.get("Foreign Net (3d)", 0) / 1000
+            m1.metric("外資 (3日)", f"{int(f_net)} 張", delta="連買" if chip_metrics.get("Foreign Consecutive") else "無連買")
             
-            # 投信
             t_net = chip_metrics.get("Trust Net (10d)", 0) / 1000
-            t_label = "投信 (10日)"
-            delta_msg = "🔥 認養中" if chip_metrics.get("Trust Active Buy") else ("大股本" if not chip_metrics.get("Is Small Cap") else "無佈局")
-            m2.metric(t_label, f"{int(t_net)} 張", delta=delta_msg)
+            delta_t = "🔥 認養中" if chip_metrics.get("Trust Active Buy") else ("大股本" if not chip_metrics.get("Is Small Cap") else "無佈局")
+            m2.metric("投信 (10日)", f"{int(t_net)} 張", delta=delta_t)
             
-            # 融資
-            margin_bal = margin_metrics.get("Latest Balance", 0) / 1000
-            margin_chg = margin_metrics.get("Change", 0) / 1000
-            m3.metric("融資餘額", f"{int(margin_bal)} 張", delta=f"{int(margin_chg)} 張 (近5日)", delta_color="inverse")
+            m_bal = margin_metrics.get("Latest Balance", 0) / 1000
+            m_chg = margin_metrics.get("Change", 0) / 1000
+            m3.metric("融資餘額", f"{int(m_bal)} 張", delta=f"{int(m_chg)} 張 (近5日)", delta_color="inverse")
             
             m4.metric("營收 YoY", f"{yoy:.1f}%" if yoy else "N/A", delta_color="normal")
 
@@ -91,8 +104,7 @@ if run_btn:
             st.subheader("🎓 華爾街大師指標")
             g1, g2, g3 = st.columns(3)
             peg = guru_metrics.get('Lynch PEG')
-            peg_disp = f"{peg:.2f}" if peg is not None else "N/A"
-            g1.metric("林區 PEG", peg_disp, help="< 1.0 合理")
+            g1.metric("林區 PEG", f"{peg:.2f}" if peg is not None else "N/A", help="< 1.0 合理")
             g2.metric("神奇公式", f"ROC {guru_metrics.get('Magic ROC', 0):.1f}%")
             g3.metric("F-Score", f"{f_score}/9")
 
