@@ -6,20 +6,30 @@ from datetime import datetime, timedelta
 import time
 from .config import DATASETS
 
-# --- 簡單粗暴的重試函式 ---
-def fetch_with_retry(func, stock_id, start_date, retries=5, delay=2):
-    for i in range(retries):
-        try:
-            df = func(stock_id=stock_id, start_date=start_date)
-            # 只有當 df 是 DataFrame 且 不為空 時才算成功
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                return df
-            # 如果是空的，休息一下再試 (除非是真的很冷門的股票)
-            time.sleep(delay)
-        except Exception as e:
-            print(f"Fetch Error ({i}): {e}")
-            time.sleep(delay)
-    return pd.DataFrame() # 盡力了，回傳空表
+# --- 智慧階梯式重試 (關鍵修正) ---
+def fetch_smart_retry(func, stock_id, retries=3):
+    """
+    策略：資料量太大會失敗，所以如果失敗了，就縮短天數再試一次。
+    30天 -> 10天 -> 5天 -> 3天
+    """
+    # 定義嘗試的天數級距
+    days_options = [30, 10, 5, 3]
+    
+    for days in days_options:
+        start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        # 每個天數嘗試 retries 次
+        for i in range(retries):
+            try:
+                df = func(stock_id=stock_id, start_date=start_date)
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    return df # 成功抓到！
+                time.sleep(1) # 休息一下
+            except Exception:
+                time.sleep(1)
+        # 如果這個天數失敗了，迴圈會進入下一個更短的天數 (e.g., 30 -> 10)
+        print(f"⚠️ 抓取 {days} 天資料失敗，嘗試縮短天數...")
+    
+    return pd.DataFrame() # 徹底失敗
 
 # --- 1. 股價與基本資料 ---
 @st.cache_data(ttl=3600)
@@ -42,18 +52,21 @@ def fetch_fundamentals_data(stock_id, api_token_str):
         except: pass
 
     clean_id = stock_id.replace('.TW', '').replace('.TWO', '').strip()
-    # 財報抓 5 年
     date_long = (datetime.now() - timedelta(days=365*5)).strftime('%Y-%m-%d')
     
-    # 這裡資料量小，重試 3 次即可
-    bs = fetch_with_retry(fm.taiwan_stock_balance_sheet, clean_id, date_long, 3)
-    inc = fetch_with_retry(fm.taiwan_stock_financial_statement, clean_id, date_long, 3)
-    if inc.empty: inc = fetch_with_retry(fm.taiwan_stock_financial_statements, clean_id, date_long, 3)
+    def get(func):
+        try:
+            df = func(stock_id=clean_id, start_date=date_long)
+            return df if not df.empty else pd.DataFrame()
+        except: return pd.DataFrame()
+
+    bs = get(fm.taiwan_stock_balance_sheet)
+    inc = get(fm.taiwan_stock_financial_statement)
+    if inc.empty: inc = get(fm.taiwan_stock_financial_statements)
     
-    cf = fetch_with_retry(fm.taiwan_stock_cash_flows_statement, clean_id, date_long, 3)
-    # [重要] 營收移到這裡抓，確保有數據
-    rev = fetch_with_retry(fm.taiwan_stock_month_revenue, clean_id, date_long, 3)
-    div = fetch_with_retry(fm.taiwan_stock_dividend, clean_id, date_long, 3)
+    cf = get(fm.taiwan_stock_cash_flows_statement)
+    rev = get(fm.taiwan_stock_month_revenue)
+    div = get(fm.taiwan_stock_dividend)
 
     return bs, inc, cf, rev, div
 
@@ -67,18 +80,15 @@ def fetch_chip_data(stock_id, api_token_str):
 
     clean_id = stock_id.replace('.TW', '').replace('.TWO', '').strip()
     
-    # [極限修正] 只抓 30 天，保證資料量極小，秒殺下載
-    date_short = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-    
-    # [暴力重試] 針對籌碼 (institutional) 重試 5 次，每次休息 3 秒
-    # 這是最容易失敗的環節，必須加強火力
+    # [修正] 使用階梯式降級抓取
     if hasattr(fm, 'taiwan_stock_institutional_investors_buy_sell'):
-        chip = fetch_with_retry(fm.taiwan_stock_institutional_investors_buy_sell, clean_id, date_short, retries=5, delay=3)
+        chip = fetch_smart_retry(fm.taiwan_stock_institutional_investors_buy_sell, clean_id)
     else:
         chip = pd.DataFrame()
 
+    # 融資通常資料量小，直接抓 30 天即可，若失敗再降級
     if hasattr(fm, 'taiwan_stock_margin_purchase_short_sale'):
-        margin = fetch_with_retry(fm.taiwan_stock_margin_purchase_short_sale, clean_id, date_short, retries=5, delay=3)
+        margin = fetch_smart_retry(fm.taiwan_stock_margin_purchase_short_sale, clean_id)
     else:
         margin = pd.DataFrame()
 
