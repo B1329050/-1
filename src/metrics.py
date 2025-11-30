@@ -22,6 +22,7 @@ class MetricCalculator:
         except: return pd.DataFrame()
 
     def _get_value_smart(self, df, date, key):
+        """智慧查找：根據 Config 中的同義詞列表尋找欄位"""
         possible_names = MAPPING.get(key, [])
         if not possible_names: possible_names = [key]
         for name in possible_names:
@@ -31,8 +32,10 @@ class MetricCalculator:
         return 0
 
     def _get_prev_value(self, df, curr_date, key):
+        """取得去年同期數據 (YoY)"""
         try:
             target_date = curr_date - pd.DateOffset(years=1)
+            # 寬容度搜尋 (前後 45 天)
             mask = (df.index >= target_date - pd.Timedelta(days=45)) & \
                    (df.index <= target_date + pd.Timedelta(days=45))
             if any(mask):
@@ -42,36 +45,70 @@ class MetricCalculator:
         except: return None
 
     # ========================================================
-    # 1. 籌碼分析 (三大法人)
+    # 1. 融資籌碼分析 (Margin Analysis)
+    # ========================================================
+    def calculate_margin_metrics(self):
+        try:
+            if self.margin.empty: return {}
+            df = self.margin.copy()
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date', ascending=True)
+            
+            # 模糊搜尋欄位
+            col_name = None
+            possible_cols = ['MarginPurchaseBalance', 'MarginBalance', 'MarginPurchaseTodayBalance']
+            for c in df.columns:
+                if any(x in c for x in possible_cols): col_name = c; break
+            
+            if not col_name: return {}
+
+            df_recent = df.tail(20)
+            if len(df_recent) < 2: return {}
+            
+            latest = df_recent.iloc[-1][col_name]
+            prev_idx = -6 if len(df_recent) >= 6 else 0
+            prev = df_recent.iloc[prev_idx][col_name]
+            
+            return {
+                "Margin Increasing": latest > prev,
+                "Latest Balance": latest,
+                "Change": (latest - prev)
+            }
+        except: return {}
+
+    # ========================================================
+    # 2. 籌碼分析 (Chip Analysis - 雙語模糊比對)
     # ========================================================
     def calculate_chip_metrics(self):
         try:
             if self.chip.empty: return {}
-            
             df = self.chip.copy()
             df['date'] = pd.to_datetime(df['date'])
             df = df.sort_values('date', ascending=True)
             
-            # 確保 name 欄位存在 (轉字串比對)
             if 'name' not in df.columns: return {}
             df['name'] = df['name'].astype(str)
 
-            # 雙語比對 (Foreign/外資, Trust/投信)
+            # 外資 (包含 Foreign 或 外資)
             foreign = df[df['name'].str.contains('Foreign|外資', case=False, regex=True)].tail(3)
-            trust = df[df['name'].str.contains('Trust|投信', case=False, regex=True)].tail(10)
+            foreign_net = 0; foreign_consecutive = False
             
-            # 外資
-            foreign_net = 0
-            foreign_consecutive = False
             if not foreign.empty:
+                # 強制轉型防呆
+                for c in ['buy', 'sell']:
+                    foreign[c] = pd.to_numeric(foreign[c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+                
                 net = foreign['buy'] - foreign['sell']
                 foreign_net = net.sum()
                 if len(foreign) >= 3:
                     foreign_consecutive = (net > 0).all()
 
-            # 投信
+            # 投信 (包含 Trust 或 投信)
+            trust = df[df['name'].str.contains('Trust|投信', case=False, regex=True)].tail(10)
             trust_net = 0
             if not trust.empty:
+                for c in ['buy', 'sell']:
+                    trust[c] = pd.to_numeric(trust[c].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
                 trust_net = (trust['buy'] - trust['sell']).sum()
             
             market_cap = self.info.get('marketCap', 0)
@@ -88,46 +125,15 @@ class MetricCalculator:
         except: return {}
 
     # ========================================================
-    # 2. 融資分析 (精準對應你的截圖)
+    # 3. 大師指標 (Guru Metrics) - [TTM 修正版]
     # ========================================================
-    def calculate_margin_metrics(self):
-        try:
-            if self.margin.empty: return {}
-            df = self.margin.copy()
-            df['date'] = pd.to_datetime(df['date'])
-            df = df.sort_values('date', ascending=True)
-            
-            # [精準修正] 根據你的截圖，欄位是 MarginPurchaseTodayBalance
-            col_name = 'MarginPurchaseTodayBalance'
-            
-            # 如果欄位不存在 (FinMind 版本差異)，嘗試其他可能
-            if col_name not in df.columns:
-                for c in ['MarginPurchaseBalance', 'MarginBalance']:
-                    if c in df.columns: col_name = c; break
-            
-            if col_name not in df.columns: return {}
-
-            df_recent = df.tail(20)
-            if len(df_recent) < 2: return {}
-            
-            latest = df_recent.iloc[-1][col_name]
-            prev_idx = -6 if len(df_recent) >= 6 else 0
-            prev = df_recent.iloc[prev_idx][col_name]
-            
-            return {
-                "Margin Increasing": latest > prev,
-                "Latest Balance": latest,
-                "Change": (latest - prev)
-            }
-        except: return {}
-
-    # --- 以下維持原樣 (Guru, Revenue, F-Score, Z-Score) ---
     def calculate_guru_metrics(self):
         try:
             if self.bs.empty or self.inc.empty: return {}
             curr_date = self.inc.index[0]
             def get(df, key): return self._get_value_smart(df, curr_date, key)
 
+            # --- A. 葛拉漢數 (5年平均 EPS) ---
             equity = get(self.bs, 'EQUITY'); common_stock = get(self.bs, 'COMMON_STOCK')
             shares = (common_stock / 10) if common_stock > 0 else 1
             bvps = equity / shares if shares > 0 else 0
@@ -137,15 +143,19 @@ class MetricCalculator:
                 d = self.inc.index[i]
                 q_eps = self._get_value_smart(self.inc, d, 'EPS')
                 if q_eps == 0 and shares > 0:
-                    ni = self._get_value_smart(self.inc, d, 'NET_INCOME'); q_eps = ni / shares
+                    ni = self._get_value_smart(self.inc, d, 'NET_INCOME')
+                    q_eps = ni / shares
                 if q_eps != 0: eps_values.append(q_eps)
+            
             if eps_values: avg_eps = (sum(eps_values) / len(eps_values)) * 4
             graham_number = (22.5 * avg_eps * bvps) ** 0.5 if (avg_eps > 0 and bvps > 0) else 0
 
-            curr_assets = get(self.bs, 'CURRENT_ASSETS'); curr_liab = get(self.bs, 'CURRENT_LIABILITIES')
-            curr_ratio = (curr_assets / curr_liab) if curr_liab > 0 else 0
+            curr_assets = get(self.bs, 'CURRENT_ASSETS')
+            curr_liab = get(self.bs, 'CURRENT_LIABILITIES')
+            current_ratio = (curr_assets / curr_liab) if curr_liab > 0 else 0
             ncav = (curr_assets - get(self.bs, 'LIABILITIES')) / shares if shares > 0 else 0
 
+            # --- B. 林區 PEG ---
             _, yoy_rev = self.calculate_revenue_growth()
             growth = yoy_rev if yoy_rev else 0
             mcap = self.info.get('marketCap', 0)
@@ -167,41 +177,89 @@ class MetricCalculator:
             pe = self.info.get('trailingPE', 0)
             lynch_peg = pe / (growth + div_yield) if (growth + div_yield) > 0 and pe > 0 else None
 
-            ebit = get(self.inc, 'EBIT')
-            if ebit == 0: ebit = get(self.inc, 'PRE_TAX_INCOME') + get(self.inc, 'INTEREST_EXPENSE')
-            fixed = get(self.bs, 'FIXED_ASSETS')
-            if fixed == 0: fixed = self._get_value_smart(self.bs, curr_date, 'NON_CURRENT_ASSETS')
-            ic = fixed + (curr_assets - curr_liab)
-            magic_roc = (ebit / ic * 100) if ic > 0 else 0
+            # --- C. 神奇公式 (TTM 修正版) [cite: 55-60] ---
+            # 報告要求: 避免使用單一年度，需平滑波動。
+            # 實作: 滾動加總過去 4 季 (TTM) 的 EBIT
+            
+            ebit_ttm = 0
+            count = 0
+            # 往前抓 4 季
+            for i in range(min(4, len(self.inc))):
+                d = self.inc.index[i]
+                val = self._get_value_smart(self.inc, d, 'EBIT')
+                if val == 0: 
+                    val = self._get_value_smart(self.inc, d, 'PRE_TAX_INCOME') + \
+                          self._get_value_smart(self.inc, d, 'INTEREST_EXPENSE')
+                
+                if val != 0:
+                    ebit_ttm += val
+                    count += 1
+            
+            # 若資料不足 4 季，則用平均值年化
+            if count > 0 and count < 4:
+                ebit_ttm = (ebit_ttm / count) * 4
+            elif count == 0:
+                ebit_ttm = 0
+
+            fixed_assets = get(self.bs, 'FIXED_ASSETS')
+            if fixed_assets == 0: fixed_assets = self._get_value_smart(self.bs, curr_date, 'NON_CURRENT_ASSETS')
+            
+            wc = curr_assets - curr_liab
+            ic = fixed_assets + wc
+            
+            # 使用 TTM EBIT 計算 ROC
+            magic_roc = (ebit_ttm / ic * 100) if ic > 0 else 0
 
             debt = get(self.bs, 'LIABILITIES'); cash = get(self.bs, 'CASH')
             if cash==0: cash = self._get_value_smart(self.bs, curr_date, 'CashAndCashEquivalents')
             ev = mcap + debt - cash
-            magic_ey = (ebit / ev * 100) if ev > 0 else 0
+            magic_ey = (ebit_ttm / ev * 100) if ev > 0 else 0
 
-            return { "Graham Number": graham_number, "NCAV": ncav, "Lynch Category": lynch_cat, "Lynch PEG": lynch_peg, "Magic ROC": magic_roc, "Magic EY": magic_ey, "Avg EPS": avg_eps, "Current Ratio": curr_ratio }
-        except: return {}
+            return {
+                "Graham Number": graham_number, "NCAV": ncav,
+                "Lynch Category": lynch_cat, "Lynch PEG": lynch_peg,
+                "Magic ROC": magic_roc, "Magic EY": magic_ey,
+                "Avg EPS": avg_eps, "Current Ratio": current_ratio
+            }
+        except Exception as e: 
+            return {}
 
+    # ========================================================
+    # 4. 營收動能 (Revenue Growth)
+    # ========================================================
     def calculate_revenue_growth(self):
         try:
             if self.rev.empty: return None, None
-            df = self.rev.copy(); df['date'] = pd.to_datetime(df['date']); df = df.sort_values('date', ascending=False)
+            df = self.rev.copy()
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date', ascending=False)
+            
             val_col = 'revenue'
             if val_col not in df.columns:
                 if 'value' in df.columns: val_col = 'value'
                 else: return None, None 
+
             if len(df) < 2: return None, None
-            curr = df.iloc[0][val_col]; last = df.iloc[1][val_col]
-            mom = ((curr - last) / last * 100) if last else 0
-            tgt = df.iloc[0]['date'] - pd.DateOffset(years=1)
-            mask = (df['date'] >= tgt - pd.Timedelta(days=5)) & (df['date'] <= tgt + pd.Timedelta(days=5))
+
+            curr_rev = df.iloc[0][val_col]
+            last_month_rev = df.iloc[1][val_col]
+            mom = ((curr_rev - last_month_rev) / last_month_rev * 100) if last_month_rev else 0
+            
+            target_date = df.iloc[0]['date'] - pd.DateOffset(years=1)
+            mask = (df['date'] >= target_date - pd.Timedelta(days=5)) & \
+                   (df['date'] <= target_date + pd.Timedelta(days=5))
+            prev_rows = df.loc[mask]
             yoy = 0
-            if any(mask):
-                prev = df.loc[mask].iloc[0][val_col]
-                yoy = ((curr - prev) / prev * 100) if prev else 0
+            if not prev_rows.empty:
+                prev_rev = prev_rows.iloc[0][val_col]
+                yoy = ((curr_rev - prev_rev) / prev_rev * 100) if prev_rev else 0
+                
             return mom, yoy
         except: return None, None
 
+    # ========================================================
+    # 5. F-Score
+    # ========================================================
     def calculate_f_score(self):
         score = 0; details = []
         if self.inc.empty or self.bs.empty: return 0, ["❌ 數據缺失"]
@@ -239,6 +297,9 @@ class MetricCalculator:
         except Exception as e: details.append(f"計算中斷: {e}")
         return score, details
 
+    # ========================================================
+    # 6. Z-Score
+    # ========================================================
     def calculate_z_score(self):
         try:
             if self.bs.empty: return None, "無數據"
