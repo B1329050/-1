@@ -42,54 +42,43 @@ class MetricCalculator:
         except: return None
 
     # ========================================================
-    # [cite_start]1. 籌碼分析 (雙語通吃修正版) [cite: 317-338]
+    # 1. 籌碼分析 (暴力清洗版)
     # ========================================================
     def calculate_chip_metrics(self):
         try:
             if self.chip.empty: return {}
             
             df = self.chip.copy()
+            # 1. 欄位全轉小寫 (解決 Name/name Buy/buy 問題)
+            df.columns = [c.lower().strip() for c in df.columns]
+            
             df['date'] = pd.to_datetime(df['date'])
             df = df.sort_values('date', ascending=True)
             
-            # 1. 欄位名稱標準化 (轉小寫)
-            df.columns = [c.lower() for c in df.columns]
-            
-            # 2. 確保有 name 欄位
-            if 'name' not in df.columns: 
-                # 嘗試找別名 (如 type, investor_type)
-                if 'type' in df.columns: df.rename(columns={'type': 'name'}, inplace=True)
-                else: return {"Debug Info": "找不到 name 欄位"}
+            # 2. 尋找 'name' 欄位
+            name_col = 'name' if 'name' in df.columns else ('type' if 'type' in df.columns else None)
+            if not name_col: return {}
 
-            # 3. 雙語篩選 (關鍵修正!)
-            # 同時搜尋 "Foreign" (英) 和 "外資" (中)
-            # regex=True 代表使用正規表達式搜尋
-            mask_foreign = df['name'].astype(str).str.contains('Foreign|外資', case=False, regex=True)
+            # 3. 確保買賣數據是數字 (解決 '1,000' 字串問題)
+            for col in ['buy', 'sell']:
+                if col in df.columns:
+                    # 強制轉數字，無法轉的變 NaN 再變 0
+                    df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+            
+            # 計算淨買賣
+            df['net'] = df['buy'] - df['sell']
+
+            # A. 外資 (Foreign)
+            mask_foreign = df[name_col].astype(str).str.contains('Foreign|外資', case=False, regex=True)
             foreign = df[mask_foreign].tail(3)
             
-            foreign_net = 0
-            foreign_consecutive = False
-            
-            if not foreign.empty:
-                # 確保 buy/sell 是數字
-                foreign['buy'] = pd.to_numeric(foreign['buy'], errors='coerce').fillna(0)
-                foreign['sell'] = pd.to_numeric(foreign['sell'], errors='coerce').fillna(0)
-                foreign['net'] = foreign['buy'] - foreign['sell']
-                
-                foreign_net = foreign['net'].sum()
-                if len(foreign) >= 3:
-                    foreign_consecutive = (foreign['net'] > 0).all()
+            foreign_net = foreign['net'].sum() if not foreign.empty else 0
+            foreign_consecutive = (foreign['net'] > 0).all() if len(foreign) >= 3 else False
 
-            # 同時搜尋 "Trust" (英) 和 "投信" (中)
-            mask_trust = df['name'].astype(str).str.contains('Trust|投信', case=False, regex=True)
+            # B. 投信 (Trust)
+            mask_trust = df[name_col].astype(str).str.contains('Trust|投信', case=False, regex=True)
             trust = df[mask_trust].tail(10)
-            
-            trust_net = 0
-            if not trust.empty:
-                trust['buy'] = pd.to_numeric(trust['buy'], errors='coerce').fillna(0)
-                trust['sell'] = pd.to_numeric(trust['sell'], errors='coerce').fillna(0)
-                trust['net'] = trust['buy'] - trust['sell']
-                trust_net = trust['net'].sum()
+            trust_net = trust['net'].sum() if not trust.empty else 0
             
             market_cap = self.info.get('marketCap', 0)
             is_small_cap = 0 < market_cap < (50 * 100000000) 
@@ -103,42 +92,35 @@ class MetricCalculator:
                 "Is Small Cap": is_small_cap
             }
         except Exception as e:
-            return {"Debug Error": str(e)}
+            return {} # 靜默失敗，外層會顯示為 0
 
     # ========================================================
-    # 2. 融資分析 (容錯修正)
+    # 2. 融資分析 (暴力清洗版)
     # ========================================================
     def calculate_margin_metrics(self):
         try:
             if self.margin.empty: return {}
             df = self.margin.copy()
+            df.columns = [c.lower().strip() for c in df.columns] # 轉小寫
             df['date'] = pd.to_datetime(df['date'])
             df = df.sort_values('date', ascending=True)
             
-            # 模糊比對欄位名稱
+            # 模糊搜尋 'balance'
             target_col = None
-            for col in df.columns:
-                # 找包含 'Balance' (餘額) 且包含 'Margin' (融資) 的欄位
-                c_lower = col.lower()
-                if 'balance' in c_lower and ('margin' in c_lower or 'purchase' in c_lower):
-                    target_col = col
-                    break
-            
-            # 若找不到，嘗試常見名稱
-            if not target_col:
-                for c in ['MarginPurchaseBalance', 'MarginBalance', 'margin_purchase_balance']:
-                    if c in df.columns: 
-                        target_col = c
-                        break
+            for c in df.columns:
+                if 'balance' in c and ('margin' in c or 'purchase' in c):
+                    target_col = c; break
             
             if not target_col: return {}
+            
+            # 強制轉數字
+            df[target_col] = pd.to_numeric(df[target_col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
 
             df_recent = df.tail(20)
             if len(df_recent) < 2: return {}
             
             latest = df_recent.iloc[-1][target_col]
-            prev_idx = -6 if len(df_recent) >= 6 else 0
-            prev = df_recent.iloc[prev_idx][target_col]
+            prev = df_recent.iloc[-6][target_col] if len(df_recent) >= 6 else df_recent.iloc[0][target_col]
             
             return {
                 "Margin Increasing": latest > prev,
@@ -147,7 +129,9 @@ class MetricCalculator:
             }
         except: return {}
 
-    # --- 以下維持原樣 (Guru, Revenue, F-Score, Z-Score) ---
+    # --- 以下功能維持完整版 (Guru, Revenue, F-Score, Z-Score) ---
+    # 為確保不漏，這裡再次完整列出其他函式
+    
     def calculate_guru_metrics(self):
         try:
             if self.bs.empty or self.inc.empty: return {}
