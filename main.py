@@ -5,9 +5,9 @@ from src.data_loader import DataEngine
 from src.metrics import MetricCalculator
 from src.strategy import generate_signals, suggest_order_type
 
-st.set_page_config(page_title="台股在地化量化系統", layout="wide")
-st.title("🇹🇼 台股在地化量化決策系統")
-st.markdown("### 整合月營收動能、三大法人籌碼與大師估值模型")
+st.set_page_config(page_title="台股全方位量化系統", layout="wide")
+st.title("🇹🇼 台股在地化全方位決策系統")
+st.markdown("### 整合融資籌碼、NCAV 與大師分類模型 (透明化版)")
 
 with st.sidebar:
     st.header("系統設定")
@@ -17,87 +17,88 @@ with st.sidebar:
         st.success("✅ Token 已載入")
     else:
         token = st.text_input("FinMind Token", type="password")
-    run_btn = st.button("執行在地化分析", type="primary")
+    run_btn = st.button("執行全方位分析", type="primary")
 
 if run_btn:
     engine = DataEngine(token=token if token else None)
     
-    with st.spinner(f"正在分析 {stock_id} (含籌碼/營收/財報)..."):
+    with st.spinner(f"正在擷取 7 大資料集分析 {stock_id} ..."):
         try:
-            # 1. 獲取數據 (含籌碼 chip)
             price_df, info = engine.get_price_data(stock_id)
-            bs, inc, cf, rev, div, chip = engine.get_financial_data(stock_id)
+            bs, inc, cf, rev, div, chip, margin = engine.get_financial_data(stock_id)
             
             if bs.empty or inc.empty:
-                st.error("❌ 數據不足 (可能為新股或資料庫缺漏)")
+                st.error("❌ 數據不足")
                 st.stop()
             
-            # 2. 計算指標
-            calculator = MetricCalculator(bs, inc, cf, rev, div, chip, info)
+            calculator = MetricCalculator(bs, inc, cf, rev, div, chip, margin, info)
             
             f_score, f_details = calculator.calculate_f_score()
             z_score, z_msg = calculator.calculate_z_score()
             mom, yoy = calculator.calculate_revenue_growth()
             guru_metrics = calculator.calculate_guru_metrics()
-            chip_metrics = calculator.calculate_chip_metrics() # [新增]
+            chip_metrics = calculator.calculate_chip_metrics()
+            margin_metrics = calculator.calculate_margin_metrics()
             
-            # 3. 策略生成
             total_score, action, color, reasons = generate_signals(
-                f_score, z_score, info, mom, yoy, guru_metrics, chip_metrics
+                f_score, z_score, info, mom, yoy, guru_metrics, chip_metrics, margin_metrics
             )
             
-            # --- UI 顯示 ---
+            # --- UI ---
             st.divider()
             
             # A. 核心決策
             c1, c2 = st.columns([2, 1])
             with c1:
                 st.subheader(f"決策評級: :{color}[{action}] (總分 {total_score})")
-                if "Buy" in action or "Hold" in action:
-                    st.info(suggest_order_type(action), icon="🛡️")
+                st.caption(f"股票分類: {guru_metrics.get('Lynch Category', '未分類')}")
+                if "Buy" in action: st.info(suggest_order_type(action))
             with c2:
-                # 葛拉漢估值顯示
                 graham = guru_metrics.get('Graham Number', 0)
+                ncav = guru_metrics.get('NCAV', 0)
                 price = info.get('currentPrice', info.get('regularMarketPreviousClose', 0))
-                delta_val = f"{((price-graham)/graham)*100:.1f}% (溢價)" if (graham and price) else None
-                st.metric("葛拉漢估值 (5年平均)", f"{graham:.1f}", delta=delta_val, delta_color="inverse")
+                
+                if ncav > 0:
+                    st.metric("NCAV (清算價值)", f"{ncav:.1f}", delta=f"現價 {price}", delta_color="off")
+                else:
+                    st.metric("葛拉漢估值", f"{graham:.1f}", delta=f"{((price-graham)/graham)*100:.1f}%" if graham else None, delta_color="inverse")
 
             st.divider()
             
-            # B. 在地化因子儀表板 (籌碼 + 營收)
-            st.subheader("📊 台股在地化因子")
+            # B. 籌碼與融資 (透明化儀表板)
+            st.subheader("📊 籌碼與散戶指標")
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("外資動向", "連買 3 日" if chip_metrics.get("Foreign Consecutive Buy") else "無連續買超")
-            m2.metric("投信動向", "🔥 認養中" if chip_metrics.get("Trust Active Buy") else "無顯著佈局", 
-                      help="條件: 近期買超且為中小型股")
-            m3.metric("營收 YoY", f"{yoy:.1f}%" if yoy is not None else "N/A", delta_color="normal")
-            m4.metric("營收 MoM", f"{mom:.1f}%" if mom is not None else "N/A", delta_color="normal")
-
-           # ... (前段代碼不變) ...
+            
+            # 外資
+            f_net = chip_metrics.get("Foreign Net (3d)", 0) / 1000 # 張數
+            f_label = "外資 (3日)"
+            m1.metric(f_label, f"{int(f_net)} 張", delta="連買" if chip_metrics.get("Foreign Consecutive") else "無連買", delta_color="normal")
+            
+            # 投信
+            t_net = chip_metrics.get("Trust Net (10d)", 0) / 1000
+            t_label = "投信 (10日)"
+            delta_msg = "🔥 認養中" if chip_metrics.get("Trust Active Buy") else ("大股本" if not chip_metrics.get("Is Small Cap") else "無佈局")
+            m2.metric(t_label, f"{int(t_net)} 張", delta=delta_msg)
+            
+            # 融資
+            margin_bal = margin_metrics.get("Latest Balance", 0) / 1000
+            margin_chg = margin_metrics.get("Change", 0) / 1000
+            m3.metric("融資餘額", f"{int(margin_bal)} 張", delta=f"{int(margin_chg)} 張 (近5日)", delta_color="inverse")
+            
+            m4.metric("營收 YoY", f"{yoy:.1f}%" if yoy else "N/A", delta_color="normal")
 
             # C. 大師指標
             st.subheader("🎓 華爾街大師指標")
             g1, g2, g3 = st.columns(3)
-            
-            # [修復點] 先檢查 PEG 是否為 None，再決定顯示內容
             peg = guru_metrics.get('Lynch PEG')
-            peg_display = f"{peg:.2f}" if peg is not None else "N/A (無PE)"
-            
-            g1.metric("林區 PEG", peg_display, help="< 1.0 合理，N/A 代表目前虧損或無本益比")
-            
-            # 神奇公式顯示優化
-            roc_val = guru_metrics.get('Magic ROC', 0)
-            ey_val = guru_metrics.get('Magic EY', 0)
-            g2.metric("神奇公式", f"ROC {roc_val:.1f}%", help=f"盈餘殖利率 (EY): {ey_val:.1f}%")
-            
+            peg_disp = f"{peg:.2f}" if peg is not None else "N/A"
+            g1.metric("林區 PEG", peg_disp, help="< 1.0 合理")
+            g2.metric("神奇公式", f"ROC {guru_metrics.get('Magic ROC', 0):.1f}%")
             g3.metric("F-Score", f"{f_score}/9")
 
-            # ... (後段代碼不變) ...
-            # 詳細理由
             st.markdown("#### 📝 評分依據")
             for r in reasons: st.write(r)
 
-            # K線圖
             if not price_df.empty:
                 st.plotly_chart(go.Figure(data=[go.Candlestick(x=price_df.index, open=price_df['Open'], high=price_df['High'], low=price_df['Low'], close=price_df['Close'])]), use_container_width=True)
 
